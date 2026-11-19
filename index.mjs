@@ -83,9 +83,6 @@ async function readJsonBody(input, init) {
 }
 
 export const MuseWorkAuthPlugin = async (_ctx = {}, options = {}) => {
-  // 工具调用模式要在**每次请求时**现读（用户拨开关不会重跑插件工厂）。
-  const toolModeOf = () =>
-    _ctx?.magpie?.option?.(PROVIDER, "tool_calls_passthrough") === true ? "tool_calls" : "reasoning"
   const fetchImpl = typeof options?.fetch === "function" ? options.fetch : fetch
   const findBrowserImpl = typeof options?.findBrowser === "function" ? options.findBrowser : findBrowser
   const device = loadDevice()
@@ -193,18 +190,6 @@ export const MuseWorkAuthPlugin = async (_ctx = {}, options = {}) => {
       get refreshLead() {
         return Math.min(Math.max(Math.floor(lastTtlMs / 2), 60_000), 24 * 3600_000)
       },
-
-      // 插件选项：工具调用怎么给宿主。
-      options: [
-        {
-          key: "tool_calls_passthrough",
-          label: "工具调用透传",
-          description:
-            "把 MuseWork 内部工具调用（web_search / 画图 / 文件等）转成标准 OpenAI tool_calls。"
-            + "默认关闭：只作为思考内容展示，宿主不会执行（工具是服务端执行的，避免重复执行）。",
-          default: false,
-        },
-      ],
 
       // ═══ ② 登录 ═══════════════════════════════════════════════════
       methods: [
@@ -426,7 +411,6 @@ export const MuseWorkAuthPlugin = async (_ctx = {}, options = {}) => {
                 body,
                 stream,
                 signal,
-                toolMode: toolModeOf(),
                 onDone: release,
               })
             } catch (error) {

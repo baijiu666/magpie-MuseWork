@@ -200,7 +200,7 @@ event:error               {"code":"BAD_REQUEST","message":"…"}   ← 出错时
 - `reply` 的 `payload.content_delta` → OpenAI `delta.content`
 - `reasoning` 的 `payload.delta` → `delta.reasoning_content`
 - `component.end(reply)` 的 `payload.content` 只在没有增量时兜底
-- `tool_call`：默认作为 `reasoning_content` 展示（`🔧 工具名` + 参数 + 结果预览）；插件选项 `tool_calls_passthrough` 打开后转成标准 OpenAI `tool_calls`
+- `tool_call`：转成标准 OpenAI `tool_calls`（`tool_name` → `function.name`，流式 `payload.content` → `function.arguments`）；结果在 `payload.response`，OpenAI tool_calls 不带 result
 - `model_request` / `summary`：不往外发
 - `session.idle` → finish chunk + `data: [DONE]`
 - `error` → 错误帧 `{"error":{message,type,code,status}}`（HTTP 200 已定）

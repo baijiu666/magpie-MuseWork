@@ -499,7 +499,7 @@ test("客户端取消响应流会 abort 上游 fetch（避免中断后继续扣�
   assert.equal(aborted, true, "上游 fetch 的 signal 应该被 abort")
 })
 
-test("工具调用：默认作为 reasoning 展示；插件选项打开时透传成 tool_calls", async () => {
+test("工具调用直接透传成 tool_calls", async () => {
   const toolFrames = [
     sse("component.start", { component_type: "tool_call", id: "tc1", payload: { tool_name: "web_search", tool_call_group_id: "call-1" } }, 1),
     sse("component.content", { component_type: "tool_call", id: "tc1", payload: { content: '{"type":"info"}' } }, 2),
@@ -523,27 +523,18 @@ test("工具调用：默认作为 reasoning 展示；插件选项打开时透传
     if (url.endsWith("/api/v1/chat/completions")) return sseResponse(toolFrames)
     return jsonResponse({ code: "NOT_FOUND", message: "not found" }, 404)
   }
-  const call = async (ctx) => {
-    clearAgentCache()
-    const plugin = await MuseWorkAuthPlugin(ctx, { fetch: impl })
-    const loader = await plugin.auth.loader(async () => authObject())
-    const response = await loader.fetch("https://museai.im/api/v1/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({ model: "deepseek-v4-1-flash", stream: true, messages: [{ role: "user", content: "hi" }] }),
-    })
-    return response.text()
-  }
 
-  const passthrough = await call({ magpie: { option: () => true } })
-  assert.match(passthrough, /"tool_calls":\[\{"index":0,"id":"call-1","type":"function"/)
-  assert.match(passthrough, /"name":"web_search"/)
-  assert.match(passthrough, /"content":"结论"/)
-
-  const reasoning = await call({})
-  assert.doesNotMatch(reasoning, /"tool_calls"/)
-  assert.match(reasoning, /reasoning_content/)
-  assert.match(reasoning, /web_search/)
-  assert.match(reasoning, /"content":"结论"/)
+  clearAgentCache()
+  const plugin = await MuseWorkAuthPlugin({}, { fetch: impl })
+  const loader = await plugin.auth.loader(async () => authObject())
+  const response = await loader.fetch("https://museai.im/api/v1/chat/completions", {
+    method: "POST",
+    body: JSON.stringify({ model: "deepseek-v4-1-flash", stream: true, messages: [{ role: "user", content: "hi" }] }),
+  })
+  const text = await response.text()
+  assert.match(text, /"tool_calls":\[\{"index":0,"id":"call-1","type":"function"/)
+  assert.match(text, /"name":"web_search"/)
+  assert.match(text, /"content":"结论"/)
 })
 
 test("浏览器登录：找不到浏览器时 callback 返回可操作的 failed", async () => {

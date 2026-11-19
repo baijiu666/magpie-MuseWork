@@ -13,8 +13,9 @@
 //   event: error             {code:"BAD_REQUEST", message:"…"}
 //
 // 正文在 reply 的 content_delta；思考在 reasoning 的 delta。
-// 工具调用（tool_call）默认作为 reasoning 展示（宿主不会执行）；开启「工具调用透传」后
-// 转成标准 OpenAI tool_calls。注意：工具是**服务端执行**的，payload.response 才是结果。
+// 工具调用（tool_call）直接转成标准 OpenAI tool_calls：tool_name → function.name，
+// 流式 payload.content → function.arguments。注意：工具是**服务端执行**的，
+// payload.response 才是结果，OpenAI tool_calls 不带 result。
 
 import { upstreamError, upstreamStatus } from "./errors.mjs"
 
@@ -31,7 +32,7 @@ function textOf(value) {
 }
 
 export class MuseTranslator {
-  constructor(model, { id, created, toolMode } = {}) {
+  constructor(model, { id, created } = {}) {
     this.model = String(model || "")
     this.created = Number.isFinite(created) ? created : Math.floor(Date.now() / 1000)
     this.id = id || `chatcmpl-musework-${this.created}-${Math.random().toString(36).slice(2, 8)}`
@@ -43,10 +44,7 @@ export class MuseTranslator {
     this.finishEmitted = false
     this.finishReason = ""
     this.contentChars = 0
-    // 上游工具调用（web_search / 画图 / 文件…）：
-    //   reasoning 模式（默认）→ 作为 reasoning_content 展示，宿主不会执行；
-    //   tool_calls 模式 → 标准 OpenAI tool_calls，客户端可以选择执行。
-    this.toolMode = toolMode === "tool_calls" ? "tool_calls" : "reasoning"
+    // 上游工具调用（web_search / 画图 / 文件…）直接透传成标准 OpenAI tool_calls。
     this.toolCalls = new Map()
     this.toolCallCount = 0
   }
@@ -81,11 +79,7 @@ export class MuseTranslator {
     this.toolCallCount += 1
     this.toolCalls.set(key, { index, id, name, args: "" })
     this.start(out)
-    if (this.toolMode === "tool_calls") {
-      out.push(this.delta({ tool_calls: [{ index, id, type: "function", function: { name, arguments: "" } }] }))
-    } else {
-      out.push(this.delta({ reasoning_content: `\n🔧 ${name} ` }))
-    }
+    out.push(this.delta({ tool_calls: [{ index, id, type: "function", function: { name, arguments: "" } }] }))
   }
 
   /** 工具参数是流式 JSON 片段（payload.content）。 */
@@ -95,24 +89,12 @@ export class MuseTranslator {
     const text = textOf(data?.payload?.content)
     if (!entry || !text) return
     entry.args += text
-    if (this.toolMode === "tool_calls") {
-      out.push(this.delta({ tool_calls: [{ index: entry.index, function: { arguments: text } }] }))
-    } else {
-      out.push(this.delta({ reasoning_content: text }))
-    }
+    out.push(this.delta({ tool_calls: [{ index: entry.index, function: { arguments: text } }] }))
   }
 
-  /** 工具执行结束；payload.response 是服务端已经拿到的结果。 */
-  toolEnd(data, out) {
-    const key = String(data?.id || "")
-    const entry = this.toolCalls.get(key)
-    if (!entry) return
-    if (this.toolMode === "reasoning") {
-      const response = textOf(data?.payload?.response)
-      const preview = response ? response.replace(/\s+/gu, " ").slice(0, 160) : ""
-      out.push(this.delta({ reasoning_content: `\n${preview ? `→ ${preview}…` : "→ 完成"}\n` }))
-    }
-    this.toolCalls.delete(key)
+  /** 工具执行结束；payload.response 是服务端已经拿到的结果，OpenAI tool_calls 不带 result。 */
+  toolEnd(data) {
+    this.toolCalls.delete(String(data?.id || ""))
   }
 
   /** 喂一段字节解码后的文本，返回已经转好的 OpenAI 帧。 */
@@ -236,7 +218,7 @@ export class MuseTranslator {
           out.push(this.delta({ content: full }))
         }
       } else if (data?.component_type === "tool_call") {
-        this.toolEnd(data, out)
+        this.toolEnd(data)
       }
       return
     }

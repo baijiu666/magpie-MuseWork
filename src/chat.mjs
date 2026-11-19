@@ -242,7 +242,6 @@ export async function museChat({
   stream,
   signal,
   onDone,
-  toolMode = "reasoning",
 }) {
   const content = buildContent(body?.messages)
   if (!content.length) throw upstreamError("messages 不能为空", 400, { code: "invalid_request" })
@@ -289,7 +288,7 @@ export async function museChat({
       for (let attempt = 1; ; attempt += 1) {
         try {
           const { session, response } = await openTurn()
-          const translator = new MuseTranslator(modelKey, { toolMode })
+          const translator = new MuseTranslator(modelKey)
           const reader = response.body.getReader()
           const decoder = new TextDecoder()
           const frames = []
@@ -372,7 +371,7 @@ export async function museChat({
         let current = turn
         while (true) {
           let retry = false
-          const translator = new MuseTranslator(modelKey, { toolMode })
+          const translator = new MuseTranslator(modelKey)
           const reader = current.response.body.getReader()
           activeReader = reader
           activeSessionId = current.session.sessionId

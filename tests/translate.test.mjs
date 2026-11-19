@@ -29,23 +29,18 @@ function toolCallFrames(translator) {
   return frames
 }
 
-test("tool_call 默认作为 reasoning 展示，不产生 tool_calls", () => {
+test("tool_call 直接输出标准 tool_calls", () => {
   const translator = new MuseTranslator("m")
   const joined = toolCallFrames(translator).join("")
-  assert.match(joined, /"reasoning_content":"\\n🔧 web_search "/)
-  assert.match(joined, /web_search /)
-  assert.match(joined, /\\"type\\":\\"info\\",\\"time\\":\\"day\\"/)
-  assert.match(joined, /→ search results/)
-  assert.doesNotMatch(joined, /"tool_calls"/)
-})
-
-test("tool_calls 透传模式输出标准 tool_calls，折叠时进 message.tool_calls", () => {
-  const translator = new MuseTranslator("m", { toolMode: "tool_calls" })
-  const frames = toolCallFrames(translator)
-  const joined = frames.join("")
   assert.match(joined, /"tool_calls":\[\{"index":0,"id":"call-1","type":"function"/)
   assert.match(joined, /"name":"web_search"/)
   assert.match(joined, /"arguments":"\{\\"type\\":\\"info\\",\\"time\\":\\"day\\"\}"/)
+  assert.doesNotMatch(joined, /reasoning_content/)
+})
+
+test("tool_calls 折叠时进 message.tool_calls", () => {
+  const translator = new MuseTranslator("m")
+  const frames = toolCallFrames(translator)
 
   const folded = foldFrames(frames, "m")
   const calls = folded.choices[0].message.tool_calls
