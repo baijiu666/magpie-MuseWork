@@ -499,6 +499,53 @@ test("客户端取消响应流会 abort 上游 fetch（避免中断后继续扣�
   assert.equal(aborted, true, "上游 fetch 的 signal 应该被 abort")
 })
 
+test("工具调用：默认作为 reasoning 展示；插件选项打开时透传成 tool_calls", async () => {
+  const toolFrames = [
+    sse("component.start", { component_type: "tool_call", id: "tc1", payload: { tool_name: "web_search", tool_call_group_id: "call-1" } }, 1),
+    sse("component.content", { component_type: "tool_call", id: "tc1", payload: { content: '{"type":"info"}' } }, 2),
+    sse("component.end", { component_type: "tool_call", id: "tc1", payload: { response: "ok" } }, 3),
+    sse("component.content", { component_type: "reply", id: "r1", payload: { content_delta: "结论" } }, 4),
+    sse("session.idle", { session_id: "s1" }, 5),
+  ]
+  const impl = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : String(input?.url || "")
+    const method = String(init?.method || "GET").toUpperCase()
+    if (url.includes("/api/v1/agents")) {
+      return jsonResponse({ data: { agents: [{
+        agent_id: "agent-1", name: "MuBear", agent_status: "active",
+        channels: [{ channel_id: "channel-1", channel_type: "web" }],
+      }] } })
+    }
+    if (url.endsWith("/api/v1/sessions") && method === "POST") {
+      return jsonResponse({ data: { session_id: "session-1", channel_id: "channel-1", agent_id: "agent-1" } })
+    }
+    if (url.includes("/delete")) return jsonResponse({ data: {} })
+    if (url.endsWith("/api/v1/chat/completions")) return sseResponse(toolFrames)
+    return jsonResponse({ code: "NOT_FOUND", message: "not found" }, 404)
+  }
+  const call = async (ctx) => {
+    clearAgentCache()
+    const plugin = await MuseWorkAuthPlugin(ctx, { fetch: impl })
+    const loader = await plugin.auth.loader(async () => authObject())
+    const response = await loader.fetch("https://museai.im/api/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "deepseek-v4-1-flash", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    })
+    return response.text()
+  }
+
+  const passthrough = await call({ magpie: { option: () => true } })
+  assert.match(passthrough, /"tool_calls":\[\{"index":0,"id":"call-1","type":"function"/)
+  assert.match(passthrough, /"name":"web_search"/)
+  assert.match(passthrough, /"content":"结论"/)
+
+  const reasoning = await call({})
+  assert.doesNotMatch(reasoning, /"tool_calls"/)
+  assert.match(reasoning, /reasoning_content/)
+  assert.match(reasoning, /web_search/)
+  assert.match(reasoning, /"content":"结论"/)
+})
+
 test("浏览器登录：找不到浏览器时 callback 返回可操作的 failed", async () => {
   const plugin = await MuseWorkAuthPlugin({}, { findBrowser: () => "" })
   const method = plugin.auth.methods.find((item) => item.label.includes("浏览器"))

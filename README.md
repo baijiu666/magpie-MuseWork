@@ -36,6 +36,7 @@ magpie plugin login musework
 | `auth.usage` | 积分余额 + 套餐（`credits/balance` + `subscription`） |
 | `auth.checkin` | 每日奖励领取（`daily-rewards/status` + `daily-rewards/claim`，D1 50 → D5+ 300） |
 | `provider.models` | 实时目录 `GET /api/v1/sessions/models` |
+| `auth.options` | 「工具调用透传」开关（默认关闭，见「边界」） |
 | `chat.headers` | `x-magpie-session-id`（诊断用） |
 
 ## 协议（10.0.3 实测）
@@ -65,8 +66,12 @@ magpie plugin login musework
 
 ## 边界
 
-- **不支持 OpenAI function calling**：MuseWork 智能体有自己的工具（bash / 浏览器 / 文件），
-  不会回 `tool_calls`。模型条目标了 `toolcall: false`。
+- **上游不接受宿主的 `tools`**：MuseWork 智能体的工具（web_search / 画图 / bash / 文件）是
+  **服务端执行**的，不会回标准 `tool_calls`。模型条目标了 `toolcall: false`。
+- **工具调用怎么展示**：默认把上游的工具调用（工具名 + 流式 JSON 参数 + 结果预览）作为
+  `reasoning_content` 展示，宿主**不会执行**。插件选项「工具调用透传」
+  （`tool_calls_passthrough`）打开后，会转成标准 OpenAI `tool_calls`，客户端可以选择执行；
+  注意工具已经在服务端跑过，客户端再执行会重复（`bash`/写文件这类要谨慎）。
 - **思考档位**：请求体里的 `reasoning_effort`（或 `reasoning.effort` /
   `providerOptions.musework.reasoningEffort`）会透传给上游；缺省 `medium`。
 - **额度口径**：`credits/balance` 的 daily + bonus 两个池合成一条「积分」窗口，
@@ -86,7 +91,7 @@ magpie plugin login musework
 ## 开发
 
 ```bash
-npm test                 # 73 个测试
+npm test                 # 76 个测试
 node scripts/probe.mjs   # 用本机客户端登录态跑真机链路
 MAGPIE_MUSEWORK_TOKEN_FILE=token.txt node scripts/probe.mjs --plain --image --usage
 ```

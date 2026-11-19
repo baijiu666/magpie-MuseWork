@@ -12,8 +12,9 @@
 //   event: session.idle      {session_id, stats_delta:{credits,…}}
 //   event: error             {code:"BAD_REQUEST", message:"…"}
 //
-// 正文在 reply 的 content_delta；思考在 reasoning 的 delta。tool_call / model_request
-// 是智能体自己的内部活动，不往外发（宿主拿到也执行不了）。
+// 正文在 reply 的 content_delta；思考在 reasoning 的 delta。
+// 工具调用（tool_call）默认作为 reasoning 展示（宿主不会执行）；开启「工具调用透传」后
+// 转成标准 OpenAI tool_calls。注意：工具是**服务端执行**的，payload.response 才是结果。
 
 import { upstreamError, upstreamStatus } from "./errors.mjs"
 
@@ -30,7 +31,7 @@ function textOf(value) {
 }
 
 export class MuseTranslator {
-  constructor(model, { id, created } = {}) {
+  constructor(model, { id, created, toolMode } = {}) {
     this.model = String(model || "")
     this.created = Number.isFinite(created) ? created : Math.floor(Date.now() / 1000)
     this.id = id || `chatcmpl-musework-${this.created}-${Math.random().toString(36).slice(2, 8)}`
@@ -42,6 +43,12 @@ export class MuseTranslator {
     this.finishEmitted = false
     this.finishReason = ""
     this.contentChars = 0
+    // 上游工具调用（web_search / 画图 / 文件…）：
+    //   reasoning 模式（默认）→ 作为 reasoning_content 展示，宿主不会执行；
+    //   tool_calls 模式 → 标准 OpenAI tool_calls，客户端可以选择执行。
+    this.toolMode = toolMode === "tool_calls" ? "tool_calls" : "reasoning"
+    this.toolCalls = new Map()
+    this.toolCallCount = 0
   }
 
   frame(value) {
@@ -62,6 +69,50 @@ export class MuseTranslator {
     if (this.started) return
     this.started = true
     out.push(this.delta({ role: "assistant", content: "" }))
+  }
+
+  /** 上游开始一个工具调用。 */
+  toolStart(data, out) {
+    const payload = data?.payload && typeof data.payload === "object" ? data.payload : {}
+    const name = textOf(payload.tool_name) || "tool"
+    const key = String(data?.id || payload.tool_call_group_id || name)
+    const id = textOf(payload.tool_call_group_id) || key
+    const index = this.toolCallCount
+    this.toolCallCount += 1
+    this.toolCalls.set(key, { index, id, name, args: "" })
+    this.start(out)
+    if (this.toolMode === "tool_calls") {
+      out.push(this.delta({ tool_calls: [{ index, id, type: "function", function: { name, arguments: "" } }] }))
+    } else {
+      out.push(this.delta({ reasoning_content: `\n🔧 ${name} ` }))
+    }
+  }
+
+  /** 工具参数是流式 JSON 片段（payload.content）。 */
+  toolContent(data, out) {
+    const key = String(data?.id || "")
+    const entry = this.toolCalls.get(key)
+    const text = textOf(data?.payload?.content)
+    if (!entry || !text) return
+    entry.args += text
+    if (this.toolMode === "tool_calls") {
+      out.push(this.delta({ tool_calls: [{ index: entry.index, function: { arguments: text } }] }))
+    } else {
+      out.push(this.delta({ reasoning_content: text }))
+    }
+  }
+
+  /** 工具执行结束；payload.response 是服务端已经拿到的结果。 */
+  toolEnd(data, out) {
+    const key = String(data?.id || "")
+    const entry = this.toolCalls.get(key)
+    if (!entry) return
+    if (this.toolMode === "reasoning") {
+      const response = textOf(data?.payload?.response)
+      const preview = response ? response.replace(/\s+/gu, " ").slice(0, 160) : ""
+      out.push(this.delta({ reasoning_content: `\n${preview ? `→ ${preview}…` : "→ 完成"}\n` }))
+    }
+    this.toolCalls.delete(key)
   }
 
   /** 喂一段字节解码后的文本，返回已经转好的 OpenAI 帧。 */
@@ -147,6 +198,7 @@ export class MuseTranslator {
 
     if (event === "component.start") {
       if (data?.component_type === "reply") this.start(out)
+      else if (data?.component_type === "tool_call") this.toolStart(data, out)
       return
     }
 
@@ -166,6 +218,8 @@ export class MuseTranslator {
           this.start(out)
           out.push(this.delta({ reasoning_content: text }))
         }
+      } else if (type === "tool_call") {
+        this.toolContent(data, out)
       }
       return
     }
@@ -181,6 +235,8 @@ export class MuseTranslator {
           this.contentChars += full.length
           out.push(this.delta({ content: full }))
         }
+      } else if (data?.component_type === "tool_call") {
+        this.toolEnd(data, out)
       }
       return
     }
@@ -225,6 +281,7 @@ export function foldFrames(frames, model = "") {
   let content = ""
   let reasoning = ""
   let finish = "stop"
+  const toolCalls = new Map()
   for (const raw of frames) {
     const line = String(raw).trim()
     if (!line.startsWith("data:")) continue
@@ -240,10 +297,21 @@ export function foldFrames(frames, model = "") {
     const delta = choice.delta || {}
     if (typeof delta.content === "string") content += delta.content
     if (typeof delta.reasoning_content === "string") reasoning += delta.reasoning_content
+    for (const call of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+      const index = Number.isInteger(call?.index) ? call.index : toolCalls.size
+      const item = toolCalls.get(index) || { id: "", type: "function", function: { name: "", arguments: "" } }
+      if (typeof call?.id === "string" && call.id) item.id = call.id
+      if (typeof call?.function?.name === "string" && call.function.name) item.function.name = call.function.name
+      if (typeof call?.function?.arguments === "string") item.function.arguments += call.function.arguments
+      toolCalls.set(index, item)
+    }
     if (typeof choice.finish_reason === "string" && choice.finish_reason) finish = choice.finish_reason
   }
   const message = { role: "assistant", content: content || "" }
   if (reasoning) message.reasoning_content = reasoning
+  if (toolCalls.size) {
+    message.tool_calls = [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([, value]) => value)
+  }
   return {
     id: id || `chatcmpl-musework-${Math.floor(Date.now() / 1000)}`,
     object: "chat.completion",

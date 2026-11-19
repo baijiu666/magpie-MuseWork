@@ -11,6 +11,50 @@ function framesOf(translator, text) {
   return translator.push(text)
 }
 
+function toolCallFrames(translator) {
+  const frames = []
+  frames.push(...translator.push(sse("component.start", {
+    component_type: "tool_call", id: "tc1",
+    payload: { tool_name: "web_search", tool_call_group_id: "call-1" },
+  }, 1)))
+  frames.push(...translator.push(sse("component.content", {
+    component_type: "tool_call", id: "tc1",
+    payload: { content: '{"type":"info","time":"day"}' },
+  }, 2)))
+  frames.push(...translator.push(sse("component.end", {
+    component_type: "tool_call", id: "tc1",
+    payload: { response: "search results" },
+  }, 3)))
+  frames.push(...translator.push(sse("session.idle", { session_id: "s1" }, 4)))
+  return frames
+}
+
+test("tool_call 默认作为 reasoning 展示，不产生 tool_calls", () => {
+  const translator = new MuseTranslator("m")
+  const joined = toolCallFrames(translator).join("")
+  assert.match(joined, /"reasoning_content":"\\n🔧 web_search "/)
+  assert.match(joined, /web_search /)
+  assert.match(joined, /\\"type\\":\\"info\\",\\"time\\":\\"day\\"/)
+  assert.match(joined, /→ search results/)
+  assert.doesNotMatch(joined, /"tool_calls"/)
+})
+
+test("tool_calls 透传模式输出标准 tool_calls，折叠时进 message.tool_calls", () => {
+  const translator = new MuseTranslator("m", { toolMode: "tool_calls" })
+  const frames = toolCallFrames(translator)
+  const joined = frames.join("")
+  assert.match(joined, /"tool_calls":\[\{"index":0,"id":"call-1","type":"function"/)
+  assert.match(joined, /"name":"web_search"/)
+  assert.match(joined, /"arguments":"\{\\"type\\":\\"info\\",\\"time\\":\\"day\\"\}"/)
+
+  const folded = foldFrames(frames, "m")
+  const calls = folded.choices[0].message.tool_calls
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].id, "call-1")
+  assert.equal(calls[0].function.name, "web_search")
+  assert.equal(calls[0].function.arguments, '{"type":"info","time":"day"}')
+})
+
 test("reply 流：role → content → finish → [DONE]", () => {
   const translator = new MuseTranslator("deepseek-v4-1-flash")
   const frames = []
@@ -55,13 +99,14 @@ test("reasoning 增量走 reasoning_content，不是正文", () => {
   assert.doesNotMatch(joined, /"content":"想一想"/)
 })
 
-test("tool_call / model_request 组件不往外发", () => {
+test("model_request 组件不往外发；tool_call 只看 content 参数", () => {
   const translator = new MuseTranslator("m")
   const frames = []
   frames.push(...translator.push(sse("component.start", { component_type: "model_request", id: "m1" }, 1)))
   frames.push(...translator.push(sse("component.content", {
     component_type: "model_request", id: "m1", payload: { delta: "内部活动" },
   }, 2)))
+  // 没有 component.start 的孤儿 tool_call 内容不会展示
   frames.push(...translator.push(sse("component.content", {
     component_type: "tool_call", id: "tc1", payload: { delta: "bash" },
   }, 3)))
